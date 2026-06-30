@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>溯源 · TraceRAG — 给答案带上来源的 PDF 问答</title>
+<!-- pdf.js (UMD)：浏览器内解析 PDF，无需后端 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root{
+    --bg:#f6f3ec; --panel:#fffdf8; --ink:#2a2622; --muted:#8c8378;
+    --line:#e8e1d4; --accent:#b5402a; --accent-soft:#f3e2dc; --ok:#2f7d4f; --link:#2f6f6a;
+    --shadow:0 1px 2px rgba(60,45,30,.05),0 6px 22px rgba(60,45,30,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink); font:15px/1.65 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex; flex-direction:column; min-height:100vh;
+  }
+  a{color:var(--link)}
+  /* top bar */
+  header{
+    display:flex; align-items:center; gap:14px; padding:14px 20px; background:var(--panel);
+    border-bottom:1px solid var(--line); position:sticky; top:0; z-index:20;
+  }
+  .brand{font-family:Georgia,"Songti SC","STSong",serif; font-size:21px; font-weight:700; letter-spacing:.5px}
+  .brand .en{color:var(--muted); font-weight:400; font-size:15px; margin-left:6px}
+  .tagline{color:var(--muted); font-size:13px}
+  header .sp{flex:1}
+  .badge{font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--muted); white-space:nowrap}
+  .badge.sem{color:var(--ok); border-color:#bfe0cd; background:#f0f8f2}
+  .badge.demo{color:var(--accent); border-color:#eccabe; background:var(--accent-soft)}
+  button{font:inherit; cursor:pointer}
+  .btn{border:1px solid var(--line); background:#fff; color:var(--ink); padding:7px 13px; border-radius:9px; transition:.15s}
+  .btn:hover{border-color:var(--accent); color:var(--accent)}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .btn.primary:hover{filter:brightness(1.05); color:#fff}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  /* layout */
+  main{flex:1; display:flex; gap:18px; padding:18px 20px; max-width:1180px; width:100%; margin:0 auto}
+  .col-doc{width:330px; flex:none; display:flex; flex-direction:column; gap:14px}
+  .col-chat{flex:1; display:flex; flex-direction:column; min-width:0}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow)}
+  .card h3{margin:0; padding:13px 16px; font-size:14px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px}
+  .card .body{padding:14px 16px}
+  /* drop zone */
+  #drop{border:2px dashed var(--line); border-radius:12px; padding:26px 14px; text-align:center; color:var(--muted); transition:.15s; cursor:pointer}
+  #drop:hover,#drop.over{border-color:var(--accent); color:var(--accent); background:var(--accent-soft)}
+  #drop b{color:var(--ink)}
+  .docinfo{font-size:13px}
+  .docinfo .row{display:flex; justify-content:space-between; padding:3px 0; color:var(--muted)}
+  .docinfo .row b{color:var(--ink); font-weight:600}
+  .status{font-size:12.5px; color:var(--muted); margin-top:8px; min-height:18px}
+  .status.err{color:var(--accent)}
+  .mini{font-size:12.5px; color:var(--muted); line-height:1.7}
+  .mini code{background:#f0ebe0; padding:1px 5px; border-radius:5px; font-size:12px}
+  .pipe{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px}
+  .pipe span{font-size:11.5px; background:#f0ebe0; border-radius:6px; padding:3px 7px; color:#6a6258}
+  /* chat */
+  #chat{flex:1; overflow-y:auto; padding:4px 2px 10px; display:flex; flex-direction:column; gap:18px}
+  .empty{margin:auto; text-align:center; color:var(--muted); max-width:420px}
+  .empty .big{font-size:30px; margin-bottom:8px}
+  .blk{display:flex; flex-direction:column; gap:9px}
+  .q{align-self:flex-end; background:var(--ink); color:#fff; padding:9px 14px; border-radius:14px 14px 4px 14px; max-width:80%}
+  .a{background:var(--panel); border:1px solid var(--line); border-radius:4px 14px 14px 14px; padding:13px 16px; box-shadow:var(--shadow); white-space:normal}
+  .a .think{color:var(--muted); font-style:italic}
+  .cite{display:inline-block; background:var(--accent-soft); color:var(--accent); border:1px solid #eccabe; border-radius:6px; padding:0 5px; margin:0 1px; font-size:12.5px; font-weight:600; text-decoration:none; line-height:1.5}
+  .cite:hover{background:var(--accent); color:#fff}
+  .srcwrap{margin-top:2px}
+  .srcwrap .lbl{font-size:12px; color:var(--muted); margin:2px 0 6px; display:flex; align-items:center; gap:6px}
+  .src{border:1px solid var(--line); border-left:3px solid var(--accent); background:#fff; border-radius:8px; padding:9px 12px; margin-bottom:8px; transition:.2s}
+  .src.flash{background:var(--accent-soft); border-left-color:var(--accent)}
+  .src .meta{font-size:12px; color:var(--muted); margin-bottom:4px; display:flex; gap:10px}
+  .src .meta .n{color:var(--accent); font-weight:700}
+  .src .txt{font-size:13.5px; color:#403a33; max-height:7.5em; overflow:hidden; position:relative}
+  .src .txt.open{max-height:none}
+  .src .more{font-size:12px; color:var(--link); cursor:pointer; margin-top:3px; display:inline-block}
+  mark{background:#fdeecb; padding:0 1px}
+  /* input */
+  .inbar{display:flex; gap:9px; padding-top:12px; border-top:1px solid var(--line); margin-top:6px}
+  .inbar textarea{flex:1; resize:none; border:1px solid var(--line); border-radius:11px; padding:11px 13px; font:inherit; background:#fff; height:46px; max-height:140px}
+  .inbar textarea:focus{outline:none; border-color:var(--accent)}
+  .chips{display:flex; flex-wrap:wrap; gap:7px; margin-bottom:2px}
+  .chip{font-size:12.5px; background:#fff; border:1px solid var(--line); border-radius:999px; padding:5px 11px; color:var(--muted)}
+  .chip:hover{border-color:var(--accent); color:var(--accent)}
+  /* modal */
+  .mask{position:fixed; inset:0; background:rgba(40,30,20,.4); display:none; align-items:center; justify-content:center; z-index:50; padding:18px}
+  .mask.show{display:flex}
+  .modal{background:var(--panel); border-radius:16px; max-width:520px; width:100%; max-height:88vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.25)}
+  .modal h2{margin:0; padding:17px 20px; font-size:17px; border-bottom:1px solid var(--line); display:flex; align-items:center}
+  .modal h2 .x{margin-left:auto; cursor:pointer; color:var(--muted); font-size:22px; line-height:1}
+  .modal .body{padding:18px 20px}
+  label{display:block; font-size:13px; font-weight:600; margin:13px 0 5px}
+  label:first-child{margin-top:0}
+  input,select{width:100%; border:1px solid var(--line); border-radius:9px; padding:9px 11px; font:inherit; background:#fff}
+  input:focus,select:focus{outline:none; border-color:var(--accent)}
+  .hint{font-size:12px; color:var(--muted); margin-top:5px}
+  .priv{font-size:12.5px; color:#6a6258; background:#f0ebe0; border-radius:9px; padding:10px 12px; margin-top:15px; line-height:1.6}
+  .testout{font-size:13px; margin-top:10px; min-height:18px}
+  .modal .foot{display:flex; gap:10px; padding:14px 20px; border-top:1px solid var(--line)}
+  .step{display:flex; gap:11px; margin:13px 0}
+  .step .num{flex:none; width:26px; height:26px; border-radius:50%; background:var(--accent-soft); color:var(--accent); font-weight:700; display:flex; align-items:center; justify-content:center; font-size:13px}
+  .step .t b{display:block}
+  .step .t{font-size:13.5px; color:#544d44}
+  @media(max-width:820px){
+    header{flex-wrap:wrap; gap:8px 10px; padding:11px 15px}
+    .tagline{display:none}
+    .brand{font-size:19px}
+    .col-doc{width:100%}
+    main{flex-direction:column; padding:14px}
+    #chat{min-height:300px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">溯源<span class="en">TraceRAG</span></div>
+  <div class="tagline">每个答案，都能点回原文</div>
+  <div class="sp"></div>
+  <span id="modeBadge" class="badge demo">演示模式 · 关键词检索</span>
+  <button class="btn" id="howBtn">原理</button>
+  <button class="btn primary" id="setBtn">设置 / API Key</button>
+</header>
+
+<main>
+  <!-- 左栏：文档 -->
+  <div class="col-doc">
+    <div class="card">
+      <h3>📄 文档</h3>
+      <div class="body">
+        <div id="drop">
+          <div style="font-size:26px">⬆️</div>
+          <div>把 <b>PDF</b> 拖到这里<br>或 <b>点击选择</b></div>
+          <input type="file" id="file" accept="application/pdf" hidden />
+        </div>
+        <div id="docinfo" class="docinfo" style="display:none; margin-top:12px"></div>
+        <div id="status" class="status"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🔧 它怎么工作</h3>
+      <div class="body">
+        <div class="mini">
+          上传后，文档被切成带页码的小块；提问时检索出最相关的几块作为「来源」，再让模型据此回答并标注 <code>[1][2]</code>。
+        </div>
+        <div class="pipe">
+          <span>PDF</span><span>→ 切块</span><span>→ 向量/BM25</span><span>→ 检索 Top-K</span><span>→ 带引用回答</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右栏：问答 -->
+  <div class="col-chat">
+    <div id="chat">
+      <div class="empty" id="empty">
+        <div class="big">🔎</div>
+        <div><b>先上传一个 PDF</b>，然后随便问它点什么。<br>答案下方会列出它依据的<b>原文片段</b>。</div>
+      </div>
+    </div>
+    <div class="chips" id="chips" style="display:none">
+      <button class="chip" data-q="这份文档主要讲了什么？">这份文档主要讲了什么？</button>
+      <button class="chip" data-q="帮我总结三个要点">帮我总结三个要点</button>
+      <button class="chip" data-q="文档里提到的关键数字有哪些？">关键数字有哪些？</button>
+    </div>
+    <div class="inbar">
+      <textarea id="qbox" placeholder="向文档提问…（Enter 发送 / Shift+Enter 换行）" disabled></textarea>
+      <button class="btn primary" id="askBtn" disabled>提问</button>
+    </div>
+  </div>
+</main>
+
+<!-- 设置 -->
+<div class="mask" id="setMask">
+  <div class="modal">
+    <h2>设置 / API Key <span class="x" data-close>×</span></h2>
+    <div class="body">
+      <label>模型服务商</label>
+      <select id="provider">
+        <option value="dashscope">通义千问 DashScope（推荐 · 浏览器可直连）</option>
+        <option value="openai">OpenAI</option>
+        <option value="custom">自定义（任何 OpenAI 兼容接口）</option>
+      </select>
+      <label>Base URL</label>
+      <input id="base" placeholder="https://..." />
+      <label>API Key</label>
+      <input id="key" type="password" placeholder="sk-... / 留空则用演示模式" />
+      <label>对话模型</label>
+      <input id="chatModel" placeholder="qwen-plus" />
+      <label>嵌入模型（语义检索用）</label>
+      <input id="embedModel" placeholder="text-embedding-v3" />
+      <div class="testout" id="testout"></div>
+      <div class="priv">🔒 你的 Key 只存在<b>本机浏览器</b>（localStorage），请求<b>直连模型厂商</b>，不经过任何中间服务器。本工具是一个纯静态网页。</div>
+    </div>
+    <div class="foot">
+      <button class="btn" id="testBtn">测试连接</button>
+      <div style="flex:1"></div>
+      <button class="btn" data-close>取消</button>
+      <button class="btn primary" id="saveBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 原理 -->
+<div class="mask" id="howMask">
+  <div class="modal">
+    <h2>RAG 是怎么"带来源回答"的 <span class="x" data-close>×</span></h2>
+    <div class="body">
+      <div class="step"><div class="num">1</div><div class="t"><b>解析 & 切块</b>用 pdf.js 在浏览器里抽出文本，切成 ~600 字、带页码的小块（保留重叠避免切断语义）。</div></div>
+      <div class="step"><div class="num">2</div><div class="t"><b>向量化</b>有 Key 时，每个块经嵌入模型变成一个向量；问题也变成向量。无 Key 时改用 <b>BM25</b> 关键词打分（纯前端，支持中英文）。</div></div>
+      <div class="step"><div class="num">3</div><div class="t"><b>检索 Top-K</b>按余弦相似度 / BM25 分数，挑出和问题最相关的几块——这就是"来源片段"。</div></div>
+      <div class="step"><div class="num">4</div><div class="t"><b>带引用生成</b>把这几块拼进提示词，要求模型<b>只依据它们</b>回答并标注 <code>[1][2]</code>，点引用就能跳回原文。找不到就如实说"文档未提及"。</div></div>
+      <div class="priv">这正是 Open WebUI 等工具内部 RAG 的最小骨架。区别只在工程规模：向量库、混合检索、OCR、多文档等，都是在这四步上加厚。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===================== 状态 ===================== */
+const K = 4, CHUNK = 600, OVERLAP = 100, MAX_CHUNKS = 400, BATCH = 10;
+let chunks = [];          // {id, page, text, vec?}
+let bm25 = null;          // 关键词索引
+let embedded = false;     // 是否已完成向量化
+let docMeta = null;
+let busy = false;
+let blkSeq = 0;
+
+const PROVIDERS = {
+  dashscope:{base:'https://dashscope.aliyuncs.com/compatible-mode/v1', chat:'qwen-plus',     embed:'text-embedding-v3'},
+  openai:   {base:'https://api.openai.com/v1',                          chat:'gpt-4o-mini',   embed:'text-embedding-3-small'},
+  custom:   {base:'', chat:'', embed:''},
+};
+let cfg = loadCfg();
+function loadCfg(){ try{return JSON.parse(localStorage.getItem('trace_cfg'))||{provider:'dashscope'}}catch(e){return {provider:'dashscope'}} }
+function saveCfg(){ localStorage.setItem('trace_cfg', JSON.stringify(cfg)); }
+
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+/* ===================== DOM ===================== */
+const $=s=>document.querySelector(s);
+const chat=$('#chat'), statusEl=$('#status'), badge=$('#modeBadge');
+const qbox=$('#qbox'), askBtn=$('#askBtn');
+
+/* ===================== 工具 ===================== */
+function setStatus(t,err){ statusEl.textContent=t||''; statusEl.classList.toggle('err',!!err); }
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function updateMode(){
+  const hasKey=!!(cfg.key&&cfg.key.trim());
+  if(hasKey&&embedded){ badge.className='badge sem'; badge.textContent='语义检索 · 模型生成'; }
+  else if(hasKey){ badge.className='badge sem'; badge.textContent='已接模型 · 待向量化'; }
+  else { badge.className='badge demo'; badge.textContent='演示模式 · 关键词检索'; }
+}
+
+/* ===================== 分词 + BM25（中英文） ===================== */
+const STOP=new Set('the a an is are was were be been being of to in into on at and or for with as by it its this that these those what which who whom how why when where do does did from will would shall can could should may might must i you he she we they him her them my your our their not no nor so if then than too very just also about over under'.split(' '));
+function tokenize(s){
+  s=(s||'').toLowerCase(); const out=[];
+  const latin=s.match(/[a-z0-9]+/g); if(latin) for(const w of latin){ if(w.length>1&&!STOP.has(w)) out.push(w); }
+  const cjk=s.match(/[一-鿿]+/g);
+  if(cjk) for(const run of cjk){ if(run.length===1) out.push(run); else for(let i=0;i<run.length-1;i++) out.push(run.slice(i,i+2)); }
+  return out;
+}
+function buildBM25(cks){
+  const N=cks.length, df={};
+  const docs=cks.map(c=>{ const tf={}, t=tokenize(c.text); t.forEach(w=>tf[w]=(tf[w]||0)+1); return {tf,len:t.length}; });
+  docs.forEach(d=>{ for(const w in d.tf) df[w]=(df[w]||0)+1; });
+  const avgdl=docs.reduce((a,d)=>a+d.len,0)/Math.max(N,1), idf={};
+  for(const w in df) idf[w]=Math.log(1+(N-df[w]+0.5)/(df[w]+0.5));
+  return {docs,idf,avgdl,N};
+}
+function bm25Score(q,i){
+  const k1=1.5,b=0.75,d=bm25.docs[i]; let s=0; const seen={};
+  for(const w of tokenize(q)){ if(seen[w])continue; seen[w]=1; const f=d.tf[w]||0; if(!f)continue;
+    s+=(bm25.idf[w]||0)*(f*(k1+1))/(f+k1*(1-b+b*d.len/bm25.avgdl)); }
+  return s;
+}
+function retrieveBM25(q){
+  const arr=bm25.docs.map((_,i)=>({i,score:bm25Score(q,i)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score).slice(0,K);
+  const max=arr.length?arr[0].score:1;
+  return arr.map(x=>({i:x.i, score:x.score/max}));   // 归一化到 0~1 方便展示
+}
+
+/* ===================== 向量检索 ===================== */
+function l2norm(v){ let s=0; for(const x of v)s+=x*x; s=Math.sqrt(s)||1; return v.map(x=>x/s); }
+function cos(a,b){ let s=0; for(let i=0;i<a.length;i++)s+=a[i]*b[i]; return s; }
+async function embed(texts){
+  const url=cfg.base.replace(/\/+$/,'')+'/embeddings';
+  let res;
+  try{ res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.key},body:JSON.stringify({model:cfg.embed,input:texts})}); }
+  catch(e){ throw new Error('网络/CORS 失败：'+e.message+'（该服务商可能不允许浏览器直连，试试 DashScope）'); }
+  if(!res.ok) throw new Error('嵌入接口 '+res.status+'：'+(await res.text()).slice(0,160));
+  const j=await res.json(); return j.data.map(d=>d.embedding);
+}
+async function embedAll(){
+  if(!(cfg.key&&cfg.key.trim())){ embedded=false; updateMode(); return; }
+  try{
+    for(let i=0;i<chunks.length;i+=BATCH){
+      const part=chunks.slice(i,i+BATCH);
+      const vs=await embed(part.map(c=>c.text));
+      vs.forEach((v,j)=>chunks[i+j].vec=l2norm(v));
+      setStatus('向量化 '+Math.min(i+BATCH,chunks.length)+'/'+chunks.length+' …');
+    }
+    embedded=true; setStatus('✅ 已就绪（语义检索）');
+  }catch(e){ embedded=false; setStatus('向量化失败，已回退关键词检索：'+e.message, true); }
+  updateMode();
+}
+async function retrieveVec(q){
+  const [qv]=await embed([q]); const qn=l2norm(qv);
+  return chunks.map((c,i)=>({i,score:cos(qn,c.vec)})).sort((a,b)=>b.score-a.score).slice(0,K);
+}
+
+/* ===================== 生成（流式） ===================== */
+function buildMessages(q,hits){
+  const ctx=hits.map((h,n)=>`[${n+1}]（第${chunks[h.i].page}页）\n${chunks[h.i].text}`).join('\n\n');
+  return [
+    {role:'system',content:'你是严谨的中文文档问答助手。只能根据下面提供的「来源片段」回答，不要使用外部知识，不要编造。回答时用 [1] [2] 这样的方括号标注你引用了第几个片段。如果来源里没有答案，就明确回答“文档中未提到”。'},
+    {role:'user',content:`问题：${q}\n\n来源片段：\n${ctx}`}
+  ];
+}
+async function* streamChat(messages){
+  const url=cfg.base.replace(/\/+$/,'')+'/chat/completions';
+  let res;
+  try{ res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.key},body:JSON.stringify({model:cfg.chat,messages,stream:true,temperature:0.2})}); }
+  catch(e){ throw new Error('网络/CORS 失败：'+e.message); }
+  if(!res.ok) throw new Error('对话接口 '+res.status+'：'+(await res.text()).slice(0,160));
+  const rd=res.body.getReader(), dec=new TextDecoder(); let buf='';
+  while(true){ const {value,done}=await rd.read(); if(done)break; buf+=dec.decode(value,{stream:true});
+    const lines=buf.split('\n'); buf=lines.pop();
+    for(let ln of lines){ ln=ln.trim(); if(!ln.startsWith('data:'))continue; const d=ln.slice(5).trim();
+      if(d==='[DONE]')return; try{ const t=JSON.parse(d).choices?.[0]?.delta?.content; if(t)yield t; }catch(e){} } }
+}
+
+/* ===================== 渲染 ===================== */
+function linkify(text,bid){
+  let h=esc(text).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+  h=h.replace(/\[(\d+)\]/g,(m,n)=>`<a class="cite" data-b="${bid}" data-n="${n}">[${n}]</a>`);
+  return h.replace(/\n/g,'<br>');
+}
+function highlight(text,q){
+  const terms=[...new Set(tokenize(q))].filter(t=>t.length>1).slice(0,12);
+  let h=esc(text);
+  terms.forEach(t=>{ try{ h=h.replace(new RegExp('('+t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark>$1</mark>'); }catch(e){} });
+  return h;
+}
+function renderSources(hits,q,bid,method){
+  if(!hits.length) return '<div class="lbl">未找到相关片段。</div>';
+  const scoreLbl=method==='vec'?'相似度':'相关度';
+  let html='<div class="lbl">📎 答案依据的来源片段（点 [n] 可跳转）</div>';
+  hits.forEach((h,n)=>{
+    const c=chunks[h.i], pct=Math.round(h.score*100);
+    html+=`<div class="src" id="src-${bid}-${n+1}">
+      <div class="meta"><span class="n">[${n+1}]</span><span>第 ${c.page} 页</span><span>${scoreLbl} ${pct}%</span></div>
+      <div class="txt" id="txt-${bid}-${n+1}">${highlight(c.text,q)}</div>
+      <span class="more" data-t="${bid}-${n+1}">展开 ▾</span>
+    </div>`;
+  });
+  return html;
+}
+function addBlock(q){
+  $('#empty')?.remove();
+  const bid=++blkSeq;
+  const blk=document.createElement('div'); blk.className='blk';
+  blk.innerHTML=`<div class="q">${esc(q)}</div><div class="a" id="a-${bid}"><span class="think">检索中…</span></div><div class="srcwrap" id="s-${bid}"></div>`;
+  chat.appendChild(blk); chat.scrollTop=chat.scrollHeight;
+  return bid;
+}
+
+/* ===================== 主流程 ===================== */
+async function ask(q){
+  if(busy) return;
+  if(!chunks.length){ setStatus('请先上传一个 PDF',true); return; }
+  q=q.trim(); if(!q) return;
+  busy=true; askBtn.disabled=true; qbox.value='';
+  const bid=addBlock(q);
+  const aEl=$('#a-'+bid), sEl=$('#s-'+bid);
+  try{
+    const hasKey=!!(cfg.key&&cfg.key.trim());
+    let hits, method;
+    if(hasKey&&embedded){ hits=await retrieveVec(q); method='vec'; }
+    else { hits=retrieveBM25(q); method='bm25'; }
+    sEl.innerHTML=renderSources(hits,q,bid,method);
+
+    if(hasKey){
+      aEl.innerHTML='<span class="think">生成中…</span>';
+      let full='';
+      for await(const t of streamChat(buildMessages(q,hits))){ full+=t; aEl.textContent=full; chat.scrollTop=chat.scrollHeight; }
+      aEl.innerHTML=linkify(full,bid);
+    }else{
+      // 演示模式：没有模型，直接给检索结论
+      if(hits.length) aEl.innerHTML='🔍 <b>演示模式（未接模型）</b>：下面是与你问题最相关的原文片段。'
+        +'填入 API Key 后，可由模型生成带 <a class="cite">[1][2]</a> 引用的自然语言回答。';
+      else aEl.innerHTML='没有在文档里找到相关内容，换个说法试试？';
+    }
+  }catch(e){
+    aEl.innerHTML='<span style="color:var(--accent)">出错了：'+esc(e.message)+'</span>';
+  }finally{
+    busy=false; askBtn.disabled=false; chat.scrollTop=chat.scrollHeight;
+  }
+}
+
+/* ===================== PDF 解析 ===================== */
+async function handleFile(file){
+  if(!file||file.type!=='application/pdf'){ setStatus('请选择 PDF 文件',true); return; }
+  setStatus('读取中…'); chunks=[]; bm25=null; embedded=false;
+  try{
+    const buf=await file.arrayBuffer();
+    const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    const pages=[];
+    for(let p=1;p<=pdf.numPages;p++){
+      const page=await pdf.getPage(p);
+      const tc=await page.getTextContent();
+      pages.push(tc.items.map(it=>it.str).join(' ').replace(/\s+/g,' ').trim());
+      setStatus('解析第 '+p+'/'+pdf.numPages+' 页…');
+    }
+    // 切块
+    let id=0;
+    pages.forEach((txt,pi)=>{
+      if(!txt) return;
+      for(let s=0;s<txt.length;s+=(CHUNK-OVERLAP)){
+        const piece=txt.slice(s,s+CHUNK);
+        if(piece.trim().length>=15) chunks.push({id:id++,page:pi+1,text:piece});
+        if(s+CHUNK>=txt.length) break;
+      }
+    });
+    let capped=false;
+    if(chunks.length>MAX_CHUNKS){ chunks=chunks.slice(0,MAX_CHUNKS); capped=true; }
+    if(!chunks.length) throw new Error('没抽到文字——这可能是扫描版/图片型 PDF（需 OCR，本工具暂不支持）。');
+    bm25=buildBM25(chunks);
+    docMeta={name:file.name,pages:pdf.numPages,nChunks:chunks.length,capped};
+    showDocInfo();
+    qbox.disabled=false; askBtn.disabled=false; $('#chips').style.display='flex'; qbox.focus();
+    setStatus('✅ 已切成 '+chunks.length+' 块'+(capped?'（超出上限已截断）':''));
+    updateMode();
+    await embedAll();
+  }catch(e){ setStatus('解析失败：'+e.message,true); }
+}
+function showDocInfo(){
+  const d=docMeta;
+  $('#docinfo').style.display='block';
+  $('#docinfo').innerHTML=
+    `<div class="row"><span>文件</span><b title="${esc(d.name)}">${esc(d.name.length>20?d.name.slice(0,18)+'…':d.name)}</b></div>`
+   +`<div class="row"><span>页数</span><b>${d.pages}</b></div>`
+   +`<div class="row"><span>文本块</span><b>${d.nChunks}</b></div>`;
+}
+
+/* ===================== 设置 / 原理 弹窗 ===================== */
+function openSet(){
+  $('#provider').value=cfg.provider||'dashscope';
+  $('#base').value=cfg.base||PROVIDERS[cfg.provider||'dashscope'].base;
+  $('#key').value=cfg.key||'';
+  $('#chatModel').value=cfg.chat||PROVIDERS[cfg.provider||'dashscope'].chat;
+  $('#embedModel').value=cfg.embed||PROVIDERS[cfg.provider||'dashscope'].embed;
+  $('#testout').textContent='';
+  $('#setMask').classList.add('show');
+}
+$('#provider').addEventListener('change',e=>{
+  const p=PROVIDERS[e.target.value]; if(p){ $('#base').value=p.base; $('#chatModel').value=p.chat; $('#embedModel').value=p.embed; }
+});
+async function testConn(){
+  const out=$('#testout'); out.style.color='var(--muted)'; out.textContent='测试中…';
+  const tmp={base:$('#base').value.trim(),key:$('#key').value.trim(),chat:$('#chatModel').value.trim()};
+  if(!tmp.key){ out.style.color='var(--accent)'; out.textContent='未填 Key（留空即用演示模式，无需测试）。'; return; }
+  try{
+    const res=await fetch(tmp.base.replace(/\/+$/,'')+'/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tmp.key},body:JSON.stringify({model:tmp.chat,messages:[{role:'user',content:'ping'}],max_tokens:1})});
+    if(res.ok){ out.style.color='var(--ok)'; out.textContent='✅ 连接成功，模型可用。'; }
+    else { out.style.color='var(--accent)'; out.textContent='❌ '+res.status+'：'+(await res.text()).slice(0,140); }
+  }catch(e){ out.style.color='var(--accent)'; out.textContent='❌ 网络/CORS 失败：'+e.message; }
+}
+async function saveSet(){
+  const old=JSON.stringify(cfg);
+  cfg={provider:$('#provider').value,base:$('#base').value.trim(),key:$('#key').value.trim(),chat:$('#chatModel').value.trim(),embed:$('#embedModel').value.trim()};
+  saveCfg(); $('#setMask').classList.remove('show'); updateMode();
+  // 若 Key/模型变了且已载入文档，则重新向量化
+  if(JSON.stringify(cfg)!==old && chunks.length){ embedded=false; updateMode(); await embedAll(); }
+}
+
+/* ===================== 事件绑定 ===================== */
+$('#setBtn').onclick=openSet;
+$('#howBtn').onclick=()=>$('#howMask').classList.add('show');
+$('#testBtn').onclick=testConn;
+$('#saveBtn').onclick=saveSet;
+document.querySelectorAll('[data-close]').forEach(el=>el.onclick=()=>el.closest('.mask').classList.remove('show'));
+document.querySelectorAll('.mask').forEach(m=>m.onclick=e=>{ if(e.target===m) m.classList.remove('show'); });
+
+const drop=$('#drop'),fileInput=$('#file');
+drop.onclick=()=>fileInput.click();
+fileInput.onchange=e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); };
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+
+askBtn.onclick=()=>ask(qbox.value);
+qbox.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); ask(qbox.value); } });
+qbox.addEventListener('input',()=>{ qbox.style.height='46px'; qbox.style.height=Math.min(qbox.scrollHeight,140)+'px'; });
+$('#chips').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{ qbox.value=c.dataset.q; ask(qbox.value); });
+
+// 引用点击跳转 + 来源展开
+document.addEventListener('click',e=>{
+  const cite=e.target.closest('.cite');
+  if(cite&&cite.dataset.b){ const el=$('#src-'+cite.dataset.b+'-'+cite.dataset.n);
+    if(el){ el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),1400); } }
+  const more=e.target.closest('.more');
+  if(more){ const t=$('#txt-'+more.dataset.t); if(t){ t.classList.toggle('open'); more.textContent=t.classList.contains('open')?'收起 ▴':'展开 ▾'; } }
+});
+
+// 初始化
+if(!cfg.base&&cfg.provider) Object.assign(cfg,PROVIDERS[cfg.provider]);
+updateMode();
+// 暴露核心给自动化测试
+window.__trace={tokenize,buildBM25,retrieveBM25,handleFile,ask,get chunks(){return chunks},get embedded(){return embedded},get docMeta(){return docMeta},setChunks(c){chunks=c;bm25=buildBM25(c);}};
+</script>
+</body>
+</html>
